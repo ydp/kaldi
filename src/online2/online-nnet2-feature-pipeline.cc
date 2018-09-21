@@ -65,6 +65,13 @@ OnlineNnet2FeaturePipelineInfo::OnlineNnet2FeaturePipelineInfo(
                  << "since you did not supply --add-pitch option.";
   }  // else use the defaults.
 
+  if (config.cmvn_config != "") {
+    ReadConfigFromFile(config.cmvn_config, &cmvn_opts);
+      global_cmvn_stats_rxfilename = config.global_cmvn_stats_rxfilename;
+    if (global_cmvn_stats_rxfilename == "")
+      KALDI_ERR << "--global-cmvn-stats option is required.";
+  }  
+
   if (config.ivector_extraction_config != "") {
     use_ivectors = true;
     OnlineIvectorExtractionConfig ivector_extraction_opts;
@@ -79,6 +86,9 @@ OnlineNnet2FeaturePipelineInfo::OnlineNnet2FeaturePipelineInfo(
 OnlineNnet2FeaturePipeline::OnlineNnet2FeaturePipeline(
     const OnlineNnet2FeaturePipelineInfo &info):
     info_(info) {
+  if(info_.global_cmvn_stats_rxfilename!="")
+    ReadKaldiObject(info_.global_cmvn_stats_rxfilename,&global_cmvn_stats_);
+
   if (info_.feature_type == "mfcc") {
     base_feature_ = new OnlineMfcc(info_.mfcc_opts);
   } else if (info_.feature_type == "plp") {
@@ -89,16 +99,46 @@ OnlineNnet2FeaturePipeline::OnlineNnet2FeaturePipeline(
     KALDI_ERR << "Code error: invalid feature type " << info_.feature_type;
   }
 
+  {
+    if(global_cmvn_stats_.NumRows() != 0){
+      if (info_.add_pitch){
+        int32 global_dim = global_cmvn_stats_.NumCols() - 1;
+        int32 dim = base_feature_->Dim();
+        KALDI_ASSERT(global_dim >= dim);
+        if (global_dim > dim){
+          Matrix<BaseFloat> last_col(global_cmvn_stats_.ColRange(global_dim, 1));
+          global_cmvn_stats_.Resize(global_cmvn_stats_.NumRows(), dim + 1,kCopyData);
+          global_cmvn_stats_.ColRange(dim, 1).CopyFromMat(last_col);
+        }
+      }
+      Matrix<double> global_cmvn_stats_dbl(global_cmvn_stats_);
+      OnlineCmvnState initial_state(global_cmvn_stats_dbl);
+      cmvn_ = new OnlineCmvn(info_.cmvn_opts, initial_state, base_feature_);
+    }
+  }
+
   if (info_.add_pitch) {
     pitch_ = new OnlinePitchFeature(info_.pitch_opts);
     pitch_feature_ = new OnlineProcessPitch(info_.pitch_process_opts,
                                             pitch_);
-    feature_plus_optional_pitch_ = new OnlineAppendFeature(base_feature_,
-                                                           pitch_feature_);
+    //feature_plus_optional_pitch_ = new OnlineAppendFeature(base_feature_,
+    //                                                       pitch_feature_);
+ 
+    if(global_cmvn_stats_.NumRows() != 0)
+    {
+      feature_plus_optional_pitch_ = new OnlineAppendFeature(cmvn_, pitch_feature_);
+    }
+    else
+    {
+      feature_plus_optional_pitch_ = new OnlineAppendFeature(base_feature_, pitch_feature_);
+    }
   } else {
     pitch_ = NULL;
     pitch_feature_ = NULL;
-    feature_plus_optional_pitch_ = base_feature_;
+    if(global_cmvn_stats_.NumRows() != 0)
+      feature_plus_optional_pitch_ = cmvn_;
+    else 
+      feature_plus_optional_pitch_ = base_feature_;
   }
 
   if (info_.use_ivectors) {
@@ -144,6 +184,18 @@ void OnlineNnet2FeaturePipeline::GetAdaptationState(
   // else silently do nothing, as there is nothing to do.
 }
 
+void OnlineNnet2FeaturePipeline::SetCmvnState(const OnlineCmvnState &cmvn_state) {
+  cmvn_->SetState(cmvn_state);
+}
+
+void OnlineNnet2FeaturePipeline::GetCmvnState(OnlineCmvnState *cmvn_state) {
+  int32 frame = cmvn_->NumFramesReady() - 1;
+  // the following call will crash if no frames are ready.
+  cmvn_->GetState(frame, cmvn_state);
+}
+void OnlineNnet2FeaturePipeline::FreezeCmvn() {
+  cmvn_->Freeze(cmvn_->NumFramesReady() - 1);
+}
 
 OnlineNnet2FeaturePipeline::~OnlineNnet2FeaturePipeline() {
   // Note: the delete command only deletes pointers that are non-NULL.  Not all
@@ -153,10 +205,16 @@ OnlineNnet2FeaturePipeline::~OnlineNnet2FeaturePipeline() {
   if (final_feature_ != feature_plus_optional_pitch_)
     delete final_feature_;
   delete ivector_feature_;
-  if (feature_plus_optional_pitch_ != base_feature_)
+  bool f = false;
+  if (feature_plus_optional_pitch_ != base_feature_) {
     delete feature_plus_optional_pitch_;
+    f = true;
+  }
   delete pitch_feature_;
   delete pitch_;
+  if (!f) {
+    delete cmvn_; // ，没有判断是否有pitch，有必要吗？
+  }
   delete base_feature_;
 }
 

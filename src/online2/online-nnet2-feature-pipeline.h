@@ -78,6 +78,9 @@ struct OnlineNnet2FeaturePipelineConfig {
   // compute-and-process-kaldi-pitch-feats.
   std::string online_pitch_config;
 
+  std::string cmvn_config;
+  std::string global_cmvn_stats_rxfilename;
+
   // The configuration variables in ivector_extraction_config relate to the
   // iVector extractor and options related to it, see type
   // OnlineIvectorExtractionConfig.
@@ -106,6 +109,14 @@ struct OnlineNnet2FeaturePipelineConfig {
     opts->Register("online-pitch-config", &online_pitch_config, "Configuration "
                    "file for online pitch features, if --add-pitch=true (e.g. "
                    "conf/online_pitch.conf)");
+
+    opts->Register("cmvn-config", &cmvn_config, "Configuration class "
+                   "file for online CMVN features (e.g. conf/online_cmvn.conf)");
+    opts->Register("global-cmvn-stats", &global_cmvn_stats_rxfilename,
+                   "(Extended) filename for global CMVN stats, e.g. obtained "
+                   "from 'matrix-sum scp:data/train/cmvn.scp -'");
+
+
     opts->Register("ivector-extraction-config", &ivector_extraction_config,
                    "Configuration file for online iVector extraction, "
                    "see class OnlineIvectorExtractionConfig in the code");
@@ -142,6 +153,9 @@ struct OnlineNnet2FeaturePipelineInfo {
   bool add_pitch;
   PitchExtractionOptions pitch_opts;  // Options for pitch extraction, if done.
   ProcessPitchOptions pitch_process_opts;  // Options for pitch post-processing
+
+  OnlineCmvnOptions cmvn_opts;  // Options for online CMN/CMVN computation.
+  std::string global_cmvn_stats_rxfilename;  // Filename used for reading global CMVN stats
 
 
   // If the user specified --ivector-extraction-config, we assume we're using
@@ -212,6 +226,16 @@ class OnlineNnet2FeaturePipeline: public OnlineFeatureInterface {
       OnlineIvectorExtractorAdaptationState *adaptation_state) const;
 
 
+  void FreezeCmvn();  // stop it from moving further (do this when you start
+                      // using fMLLR). This will crash if NumFramesReady() == 0.
+
+  /// Set the CMVN state to a particular value (will generally be
+  /// called after Copy().
+  void SetCmvnState(const OnlineCmvnState &cmvn_state);
+  void GetCmvnState(OnlineCmvnState *cmvn_state);
+
+
+
   /// Accept more data to process.  It won't actually process it until you call
   /// GetFrame() [probably indirectly via (decoder).AdvanceDecoding()], when you
   /// call this function it will just copy it).  sampling_rate is necessary just
@@ -247,6 +271,9 @@ class OnlineNnet2FeaturePipeline: public OnlineFeatureInterface {
  private:
 
   const OnlineNnet2FeaturePipelineInfo &info_;
+
+  Matrix<BaseFloat> global_cmvn_stats_;  // Global CMVN stats.
+  OnlineCmvn *cmvn_;
 
   OnlineBaseFeature *base_feature_;        // MFCC/PLP/filterbank
 
